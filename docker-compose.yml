@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  kb-assistant:
+    build: .
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./data:/app/data
+      - ./chroma:/app/chroma
+    env_file:
+      - .env
+      
