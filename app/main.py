@@ -94,7 +94,7 @@ collection = initialize_collection()
 def read_root():
     return {"message": "Knowledge Base Query Assistant API", "status": "online"}
 
-@app.post("/query", response_model=QueryResponse)
+@app.post("/query")
 async def query_kb(query_request: QueryRequest):
     try:
         # Query the collection
@@ -102,22 +102,19 @@ async def query_kb(query_request: QueryRequest):
             query_texts=[query_request.question],
             n_results=query_request.top_k
         )
-        
-        # Format the response
-        matches = []
+
+        # Build context string
+        context = ""
         for i in range(len(results["ids"][0])):
-            matches.append({
-                "article_id": results["ids"][0][i],
-                "title": results["metadatas"][0][i]["title"],
-                "answer": results["documents"][0][i],
-                "topic": results["metadatas"][0][i]["topic"],
-                "similarity": results["distances"][0][i] if "distances" in results else None
-            })
-        
-        return {"matches": matches}
-    
+            title = results["metadatas"][0][i]["title"]
+            answer = results["documents"][0][i]
+            context += f"Title: {title}\nAnswer: {answer}\n\n"
+
+        return {"context": context.strip()}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
 
 # Run directly if main
 if __name__ == "__main__":
