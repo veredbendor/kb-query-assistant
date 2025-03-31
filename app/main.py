@@ -15,6 +15,7 @@ logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY").strip()
+RAG_API_URL = os.getenv("RAG_API_URL", "").strip()
 CHROMA_PATH = "./chroma"
 DATA_PATH = "data/clean_kb_articles.csv"
 
