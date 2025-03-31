@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import pandas as pd
 import os
@@ -6,8 +6,8 @@ import openai
 from dotenv import load_dotenv
 import chromadb
 from chromadb.utils import embedding_functions
-from chromadb.errors import InvalidCollectionException
 from typing import List, Dict, Any
+import re
 
 # Load environment variables
 load_dotenv()
@@ -25,37 +25,23 @@ openai_ef = embedding_functions.OpenAIEmbeddingFunction(
     model_name="text-embedding-ada-002"
 )
 
-# Data model for query requests
-class QueryRequest(BaseModel):
-    question: str
-    top_k: int = 3  # Default to top 3 results
-
-# Data model for query responses
-class QueryResponse(BaseModel):
-    matches: List[Dict[str, Any]]
-    
 # Initialize collection
 def initialize_collection():
     try:
-        # Try to get existing collection
         collection = client.get_collection(name="kb_articles", embedding_function=openai_ef)
         print("Found existing collection with", collection.count(), "documents")
         return collection
     except Exception as e:
         print(f"Collection error: {e}")
         print("Creating new collection...")
-        
-        # Create new collection
+
         collection = client.create_collection(name="kb_articles", embedding_function=openai_ef)
-        
         try:
-            # Load KB articles
             csv_path = "data/clean_kb_articles.csv"
             print(f"Loading data from {csv_path}")
             df = pd.read_csv(csv_path)
             print(f"Loaded {len(df)} rows")
-            
-            # Prepare data for Chroma
+
             ids = [str(i) for i in df["Article Id"].tolist()]
             documents = df["Answer"].tolist()
             metadatas = df.apply(
@@ -65,11 +51,10 @@ def initialize_collection():
                     "public": bool(row["Public"]),
                     "created": str(row["Created Time"]),
                     "modified": str(row["Modified Time"])
-                }, 
+                },
                 axis=1
             ).tolist()
-            
-            # Add documents to collection in batches
+
             batch_size = 100
             for i in range(0, len(ids), batch_size):
                 end_idx = min(i + batch_size, len(ids))
@@ -79,16 +64,25 @@ def initialize_collection():
                     metadatas=metadatas[i:end_idx]
                 )
                 print(f"Added batch {i//batch_size + 1}, documents {i} to {end_idx}")
-            
+
             return collection
-            
+
         except Exception as e:
             print(f"Error loading KB data: {e}")
             print("Created empty collection for testing")
             return collection
 
-# Initialize collection
+# Initialize
 collection = initialize_collection()
+
+# Models
+class QueryRequest(BaseModel):
+    question: str
+    top_k: int = 3
+
+class ComposeRequest(BaseModel):
+    description: str
+    top_k: int = 2
 
 @app.get("/")
 def read_root():
@@ -97,13 +91,11 @@ def read_root():
 @app.post("/query")
 async def query_kb(query_request: QueryRequest):
     try:
-        # Query the collection
         results = collection.query(
             query_texts=[query_request.question],
             n_results=query_request.top_k
         )
 
-        # Build context string
         context = ""
         for i in range(len(results["ids"][0])):
             title = results["metadatas"][0][i]["title"]
@@ -115,8 +107,43 @@ async def query_kb(query_request: QueryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
+@app.post("/compose-reply")
+async def compose_reply(req: ComposeRequest):
+    try:
+        # Step 1: Mask PII
+        description = req.description
+        description = re.sub(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", "[EMAIL]", description)
+        description = re.sub(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b", "[PHONE]", description)
+        description = re.sub(r"\b[A-Z][a-z]+ [A-Z][a-z]+\b", "[NAME]", description)
 
-# Run directly if main
+        # Step 2: Query KB
+        results = collection.query(
+            query_texts=[description],
+            n_results=req.top_k
+        )
+        context = ""
+        for i in range(len(results["ids"][0])):
+            title = results["metadatas"][0][i]["title"]
+            answer = results["documents"][0][i]
+            context += f"Title: {title}\nAnswer: {answer}\n\n"
+
+        # Step 3: Compose with OpenAI
+        system_prompt = f"You are a customer support assistant for Zur Institute. Use the following knowledge base context when answering.\nContext:\n{context.strip()}"
+
+        completion = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": description}
+            ]
+        )
+
+        reply = completion["choices"][0]["message"]["content"]
+        return {"reply": reply}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Compose failed: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
