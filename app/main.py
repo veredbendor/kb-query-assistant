@@ -116,7 +116,9 @@ async def compose_reply(req: ComposeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Compose failed: {str(e)}")
 
-# ====== Run locally ======
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    import os
+    port = int(os.environ.get("PORT", 8000))  # Railway injects PORT
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
