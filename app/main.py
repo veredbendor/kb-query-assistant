@@ -1,124 +1,91 @@
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
-import pandas as pd
 import os
-import openai
-from dotenv import load_dotenv
+import pandas as pd
 import chromadb
 from chromadb.utils import embedding_functions
-from typing import List, Dict, Any
-import re
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from openai import AsyncOpenAI, OpenAIError
+import httpx
+import logging
+from dotenv import load_dotenv
 
-# Load environment variables
+# ===== Setup =====
+
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY").strip()
+CHROMA_PATH = "./chroma"
+DATA_PATH = "data/clean_kb_articles.csv"
 
-# Initialize FastAPI app
-app = FastAPI(title="Knowledge Base Query Assistant")
+# ===== App Init =====
 
-# Initialize ChromaDB client
-client = chromadb.PersistentClient("./chroma")
+app = FastAPI(title="Zur Institute KB Assistant")
 
-# Initialize OpenAI embedding function
-openai_ef = embedding_functions.OpenAIEmbeddingFunction(
-    api_key=openai.api_key,
+# ===== Chroma + Embedding =====
+
+client = chromadb.PersistentClient(CHROMA_PATH)
+embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
+    api_key=OPENAI_API_KEY,
     model_name="text-embedding-ada-002"
 )
 
-# Initialize collection
-def initialize_collection():
+def load_collection():
     try:
-        collection = client.get_collection(name="kb_articles", embedding_function=openai_ef)
-        print("Found existing collection with", collection.count(), "documents")
+        collection = client.get_collection(name="kb_articles", embedding_function=embedding_fn)
         return collection
-    except Exception as e:
-        print(f"Collection error: {e}")
-        print("Creating new collection...")
+    except Exception:
+        # Prepare collection
+        collection = client.create_collection(name="kb_articles", embedding_function=embedding_fn)
+        df = pd.read_csv(DATA_PATH)
+        df = df.dropna(subset=["Answer"])  # Clean NaN
+        ids = [str(i) for i in df["Article Id"].tolist()]
+        documents = df["Answer"].tolist()
+        metadatas = df.apply(lambda row: {
+            "title": str(row["Article Title"]),
+            "topic": str(row["Topic"]),
+        }, axis=1).tolist()
+        collection.add(ids=ids, documents=documents, metadatas=metadatas)
+        return collection
 
-        collection = client.create_collection(name="kb_articles", embedding_function=openai_ef)
-        try:
-            csv_path = "data/clean_kb_articles.csv"
-            print(f"Loading data from {csv_path}")
-            df = pd.read_csv(csv_path)
-            print(f"Loaded {len(df)} rows")
+collection = load_collection()
 
-            ids = [str(i) for i in df["Article Id"].tolist()]
-            documents = df["Answer"].tolist()
-            metadatas = df.apply(
-                lambda row: {
-                    "title": str(row["Article Title"]),
-                    "topic": str(row["Topic"]),
-                    "public": bool(row["Public"]),
-                    "created": str(row["Created Time"]),
-                    "modified": str(row["Modified Time"])
-                },
-                axis=1
-            ).tolist()
+# ===== Models =====
 
-            batch_size = 100
-            for i in range(0, len(ids), batch_size):
-                end_idx = min(i + batch_size, len(ids))
-                collection.add(
-                    ids=ids[i:end_idx],
-                    documents=documents[i:end_idx],
-                    metadatas=metadatas[i:end_idx]
-                )
-                print(f"Added batch {i//batch_size + 1}, documents {i} to {end_idx}")
-
-            return collection
-
-        except Exception as e:
-            print(f"Error loading KB data: {e}")
-            print("Created empty collection for testing")
-            return collection
-
-# Initialize
-collection = initialize_collection()
-
-# Models
 class QueryRequest(BaseModel):
     question: str
-    top_k: int = 3
+    top_k: int = Field(2, ge=1, le=10)
 
 class ComposeRequest(BaseModel):
     description: str
-    top_k: int = 2
+    top_k: int = Field(2, ge=1, le=10)
+
+# ===== Routes =====
 
 @app.get("/")
-def read_root():
-    return {"message": "Knowledge Base Query Assistant API", "status": "online"}
+def health():
+    return {"status": "KB Assistant is live"}
 
 @app.post("/query")
-async def query_kb(query_request: QueryRequest):
+async def query_kb(req: QueryRequest):
     try:
         results = collection.query(
-            query_texts=[query_request.question],
-            n_results=query_request.top_k
+            query_texts=[req.question],
+            n_results=req.top_k
         )
-
         context = ""
         for i in range(len(results["ids"][0])):
             title = results["metadatas"][0][i]["title"]
             answer = results["documents"][0][i]
             context += f"Title: {title}\nAnswer: {answer}\n\n"
-
         return {"context": context.strip()}
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 @app.post("/compose-reply")
 async def compose_reply(req: ComposeRequest):
     try:
-        # Step 1: Mask PII
-        description = req.description
-        description = re.sub(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", "[EMAIL]", description)
-        description = re.sub(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b", "[PHONE]", description)
-        description = re.sub(r"\b[A-Z][a-z]+ [A-Z][a-z]+\b", "[NAME]", description)
-
-        # Step 2: Query KB
+        # Step 1 - Query RAG
         results = collection.query(
-            query_texts=[description],
+            query_texts=[req.description],
             n_results=req.top_k
         )
         context = ""
@@ -127,23 +94,29 @@ async def compose_reply(req: ComposeRequest):
             answer = results["documents"][0][i]
             context += f"Title: {title}\nAnswer: {answer}\n\n"
 
-        # Step 3: Compose with OpenAI
-        system_prompt = f"You are a customer support assistant for Zur Institute. Use the following knowledge base context when answering.\nContext:\n{context.strip()}"
-
-        completion = openai.ChatCompletion.create(
+        # Step 2 - Compose reply
+        client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        system_prompt = (
+            "You are a customer support assistant for Zur Institute. "
+            "Use the following knowledge base context when answering:\n"
+            f"{context}"
+        )
+        completion = await client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": description}
+                {"role": "user", "content": req.description}
             ]
         )
-
-        reply = completion["choices"][0]["message"]["content"]
+        reply = completion.choices[0].message.content.strip()
         return {"reply": reply}
 
+    except OpenAIError as e:
+        raise HTTPException(status_code=500, detail=f"Compose failed: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Compose failed: {str(e)}")
 
+# ====== Run locally ======
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)
