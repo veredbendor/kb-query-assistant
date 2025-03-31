@@ -10,6 +10,8 @@ import logging
 from dotenv import load_dotenv
 
 # ===== Setup =====
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY").strip()
