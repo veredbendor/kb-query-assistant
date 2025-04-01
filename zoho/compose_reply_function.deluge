@@ -1,0 +1,87 @@
+// ====== Step 1: Define OAuth credentials ======
+client_id = "YOUR_CLIENT_ID";
+client_secret = "YOUR_CLIENT_SECRET";
+refresh_token = "YOUR_REFRESH_TOKEN";
+
+try
+{
+    // ====== Step 2: Refresh Zoho OAuth token ======
+    token_request = invokeurl
+    [
+        url :"https://accounts.zoho.com/oauth/v2/token"
+        type :POST
+        parameters: {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token"
+        }
+    ];
+    auth_token = token_request.get("access_token");
+
+    if (auth_token == null)
+    {
+        info "Failed to fetch Zoho OAuth token.";
+        return;
+    }
+
+    // ====== Step 3: Clean description input ======
+    clean_description = description.trim().replaceAll("\n", " ").replaceAll("\"", "'");
+
+    // ====== Step 4: Compose AI Reply ======
+    compose_payload = Map();
+    compose_payload.put("description", clean_description);
+    compose_payload.put("top_k", 2);
+
+    compose_reply = invokeurl
+    [
+        url : "https://kb-query-assistant-production.up.railway.app/compose-reply"
+        type :POST
+        body : compose_payload.toString()
+        headers : {
+            "Content-Type": "application/json"
+        }
+    ];
+
+    info "RAG Compose API response: " + compose_reply.toString();
+
+    if (compose_reply.containsKey("reply"))
+    {
+        ai_response = compose_reply.get("reply");
+    }
+    else
+    {
+        ai_response = "OpenAI was unable to generate a response at this time.";
+    }
+
+    info "Final AI response: " + ai_response;
+
+    // ====== Step 5: Send reply via Zoho Desk ======
+    reply_payload = Map();
+    reply_payload.put("content", ai_response);
+    reply_payload.put("contentType", "plainText");
+    reply_payload.put("fromEmailAddress", "support@zurinstitute.zohodesk.com");
+    reply_payload.put("to", email);
+    reply_payload.put("isForward", false);
+    reply_payload.put("channel", "EMAIL");
+
+    reply_url = "https://desk.zoho.com/api/v1/tickets/" + ticketId + "/sendReply";
+
+    reply_response = invokeurl
+    [
+        url : reply_url
+        type :POST
+        body : reply_payload.toString()
+        headers : {
+            "Authorization": "Zoho-oauthtoken " + auth_token,
+            "orgId": "694393301",
+            "Content-Type": "application/json"
+        }
+    ];
+
+    info "Reply response: " + reply_response.toString();
+}
+catch (e)
+{
+    info "Error occurred: " + e.toString();
+}
