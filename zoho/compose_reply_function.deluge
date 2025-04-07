@@ -3,7 +3,7 @@ client_id = "YOUR_CLIENT_ID";
 client_secret = "YOUR_CLIENT_SECRET";
 refresh_token = "YOUR_REFRESH_TOKEN";
 
-try
+try 
 {
     // ====== Step 2: Refresh Zoho OAuth token ======
     token_request = invokeurl
@@ -18,7 +18,6 @@ try
         }
     ];
     auth_token = token_request.get("access_token");
-
     if (auth_token == null)
     {
         info "Failed to fetch Zoho OAuth token.";
@@ -35,12 +34,10 @@ try
 
     compose_reply = invokeurl
     [
-        url : "https://kb-query-assistant-production.up.railway.app/compose-reply"
+        url :"https://kb-query-assistant-production.up.railway.app/compose-reply"
         type :POST
         body : compose_payload.toString()
-        headers : {
-            "Content-Type": "application/json"
-        }
+        headers : {"Content-Type": "application/json"}
     ];
 
     info "RAG Compose API response: " + compose_reply.toString();
@@ -57,13 +54,12 @@ try
     info "Final AI response: " + ai_response;
 
     // ====== Step 5: Send reply via Zoho Desk ======
-    reply_payload = Map();
-    reply_payload.put("content", ai_response);
-    reply_payload.put("contentType", "plainText");
-    reply_payload.put("fromEmailAddress", "support@zurinstitute.zohodesk.com");
-    reply_payload.put("to", email);
-    reply_payload.put("isForward", false);
-    reply_payload.put("channel", "EMAIL");
+    reply_content = "{\"content\": \"" + ai_response.replaceAll("\"", "'").replaceAll("\n", " ") + "\", " +
+                    "\"contentType\": \"plainText\", " +
+                    "\"fromEmailAddress\": \"support@zurinstitute.zohodesk.com\", " +
+                    "\"to\": \"" + email + "\", " +
+                    "\"isForward\": false, " +
+                    "\"channel\": \"EMAIL\" }";
 
     reply_url = "https://desk.zoho.com/api/v1/tickets/" + ticketId + "/sendReply";
 
@@ -71,7 +67,7 @@ try
     [
         url : reply_url
         type :POST
-        body : reply_payload.toString()
+        body : reply_content
         headers : {
             "Authorization": "Zoho-oauthtoken " + auth_token,
             "orgId": "694393301",
