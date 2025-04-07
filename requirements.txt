@@ -4,3 +4,9 @@ pandas>=2.0.3
 python-dotenv>=1.0.0
 openai>=1.0.0
 chromadb>=0.4.14
+
+presidio-analyzer
+presidio-anonymizer
+spacy
+beautifulsoup4
+
