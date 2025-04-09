@@ -52,10 +52,12 @@ def load_kb_collection():
 
 def load_thread_collection():
     try:
-        return client.get_collection(name="support_threads", embedding_function=embedding_fn)
-    except:
+        if not os.path.exists(THREADS_PATH):
+            logger.warning(f"🚫 Thread CSV not found: {THREADS_PATH}. Skipping thread collection load.")
+            return client.create_collection(name="support_threads", embedding_function=embedding_fn)
+
         df = pd.read_csv(THREADS_PATH).dropna(subset=["content"])
-        df = df[df["content"].str.len() < MAX_DOC_LENGTH]  # Avoid large docs
+        df = df[df["content"].str.len() < MAX_DOC_LENGTH]
         ids = [str(i) for i in df["ticketId"].tolist()]
         documents = df["content"].tolist()
         metadatas = df.apply(lambda row: {
@@ -66,6 +68,9 @@ def load_thread_collection():
         collection = client.create_collection(name="support_threads", embedding_function=embedding_fn)
         collection.add(ids=ids, documents=documents, metadatas=metadatas)
         return collection
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to load thread collection: {e}")
+        return client.create_collection(name="support_threads", embedding_function=embedding_fn)
 
 kb_collection = load_kb_collection()
 thread_collection = load_thread_collection()

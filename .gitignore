@@ -15,3 +15,5 @@ venv/
 .DS_Store
 data_prep/latest_kb_articles.csv
 data/rag_ready_threads.csv
+data/rag_ready_threads.jsonl
+zoho_current_tickets_03-18-2025.csv
