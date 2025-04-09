@@ -9,4 +9,5 @@ presidio-analyzer
 presidio-anonymizer
 spacy
 beautifulsoup4
+chromadb
 

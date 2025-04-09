@@ -13,3 +13,4 @@ venv/
 
 # OS specific
 .DS_Store
+data_prep/latest_kb_articles.csv
