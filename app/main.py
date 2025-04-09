@@ -3,6 +3,7 @@ import pandas as pd
 import chromadb
 from chromadb.utils import embedding_functions
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 import httpx
@@ -24,6 +25,7 @@ MAX_CONTEXT_CHARS = 6000
 
 # ===== App Init =====
 app = FastAPI(title="Zur Institute KB Assistant")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ===== Chroma + Embedding =====
 client = chromadb.PersistentClient(CHROMA_PATH)
