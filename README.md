@@ -99,3 +99,17 @@ If you prefer to develop without Docker:
 3. Embeddings are stored in a ChromaDB vector database
 4. When a query is received, it finds semantically similar content
 5. The most relevant articles are returned as responses
+
+
+## Admin Utilities
+
+### Refreshing Support Threads Collection
+
+To refresh the `support_threads` collection in Chroma with new thread data:
+
+1. Make sure the file `data/rag_ready_threads.csv` exists in the container.
+2. Call the admin endpoint with your admin password:
+
+```bash
+curl -X POST http://localhost:8000/admin/refresh-threads \
+  -H "X-Admin-Password: YOUR_ADMIN_PASSWORD"
