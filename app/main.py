@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import chromadb
 from chromadb.utils import embedding_functions
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
@@ -52,25 +52,28 @@ def load_kb_collection():
 
 def load_thread_collection():
     try:
+        return client.get_collection(name="support_threads", embedding_function=embedding_fn)
+    except Exception:
         if not os.path.exists(THREADS_PATH):
             logger.warning(f"🚫 Thread CSV not found: {THREADS_PATH}. Skipping thread collection load.")
             return client.create_collection(name="support_threads", embedding_function=embedding_fn)
 
-        df = pd.read_csv(THREADS_PATH).dropna(subset=["content"])
-        df = df[df["content"].str.len() < MAX_DOC_LENGTH]
-        ids = [str(i) for i in df["ticketId"].tolist()]
-        documents = df["content"].tolist()
-        metadatas = df.apply(lambda row: {
-            "start": str(row["createdTime_start"]),
-            "end": str(row["createdTime_end"]),
-            "type": "thread"
-        }, axis=1).tolist()
-        collection = client.create_collection(name="support_threads", embedding_function=embedding_fn)
-        collection.add(ids=ids, documents=documents, metadatas=metadatas)
-        return collection
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to load thread collection: {e}")
-        return client.create_collection(name="support_threads", embedding_function=embedding_fn)
+        try:
+            df = pd.read_csv(THREADS_PATH).dropna(subset=["content"])
+            df = df[df["content"].str.len() < MAX_DOC_LENGTH]
+            ids = [str(i) for i in df["ticketId"].tolist()]
+            documents = df["content"].tolist()
+            metadatas = df.apply(lambda row: {
+                "start": str(row["createdTime_start"]),
+                "end": str(row["createdTime_end"]),
+                "type": "thread"
+            }, axis=1).tolist()
+            collection = client.create_collection(name="support_threads", embedding_function=embedding_fn)
+            collection.add(ids=ids, documents=documents, metadatas=metadatas)
+            return collection
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to create thread collection: {e}")
+            return None
 
 kb_collection = load_kb_collection()
 thread_collection = load_thread_collection()
@@ -142,6 +145,58 @@ async def compose_reply(request: ComposeRequest):
     except Exception as e:
         logger.exception("Unexpected error in compose_reply")
         return {"reply": f"Server error: {str(e)}"}
+    
+
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
+
+@app.get("/admin/chroma")
+async def admin_chroma(request: Request):
+    password = request.headers.get("X-Admin-Password")
+    if password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    collections = client.list_collections()
+    summary = []
+    for col in collections:
+        collection = client.get_collection(name=col.name, embedding_function=embedding_fn)
+        count = len(collection.get()["ids"])
+        summary.append({"name": col.name, "document_count": count})
+
+    return {"collections": summary}
+
+
+@app.post("/admin/refresh-threads")
+async def refresh_threads(request: Request):
+    password = request.headers.get("X-Admin-Password")
+    if password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        df = pd.read_csv(THREADS_PATH).dropna(subset=["content"])
+        df = df[df["content"].str.len() < MAX_DOC_LENGTH]
+
+        ids = [str(i) for i in df["ticketId"]]
+        documents = df["content"].astype(str).tolist()
+        metadatas = df.apply(lambda row: {
+            "start": str(row["createdTime_start"]),
+            "end": str(row["createdTime_end"]),
+            "type": "thread"
+        }, axis=1).tolist()
+
+        # Drop and recreate the collection
+        try:
+            client.delete_collection("support_threads")
+        except:
+            pass
+
+        collection = client.create_collection(name="support_threads", embedding_function=embedding_fn)
+        collection.add(ids=ids, documents=documents, metadatas=metadatas)
+
+        return {"message": f"✅ Reloaded {len(ids)} support threads into vector store."}
+    except Exception as e:
+        logger.exception("❌ Failed to refresh threads")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
